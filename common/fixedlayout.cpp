@@ -25,7 +25,7 @@ struct StagedFileCleanup {
     QString path;
     ~StagedFileCleanup() { if(!path.isEmpty()) QFile::remove(path); }
 };
-quint8 byte(const QByteArray& a, int n) { return static_cast<quint8>(a.at(n)); }
+quint8 readByte(const QByteArray& a, int n) { return static_cast<quint8>(a.at(n)); }
 quint16 word(const QByteArray& a, int n) { return qFromLittleEndian<quint16>(reinterpret_cast<const uchar*>(a.constData()+n)); }
 quint32 dword(const QByteArray& a, int n) { return qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(a.constData()+n)); }
 quint64 qword(const QByteArray& a, int n) { return qFromLittleEndian<quint64>(reinterpret_cast<const uchar*>(a.constData()+n)); }
@@ -73,20 +73,20 @@ bool sameLayout(const TreeModel& a, const QModelIndex& ai, const TreeModel& b, c
 }
 QString fileCheck(const QByteArray& f, bool polarity, quint32 relative) {
     if (f.size()<24 || (relative & 7)) return "FFS header is truncated or not 8-byte aligned.";
-    const int size = byte(f,20) | byte(f,21)<<8 | byte(f,22)<<16;
-    const quint8 attr = byte(f,19);
+    const int size = readByte(f,20) | readByte(f,21)<<8 | readByte(f,22)<<16;
+    const quint8 attr = readByte(f,19);
     if (size != f.size() || (attr & (0x80 | FFS_ATTRIB_LARGE_FILE | FFS_ATTRIB_DATA_ALIGNMENT2)))
         return "Large files, extended alignment, reserved attributes or inconsistent sizes are unsupported.";
-    if (byte(f,18)<1 || byte(f,18)>15 || byte(f,18)==EFI_FV_FILETYPE_FIRMWARE_VOLUME_IMAGE)
+    if (readByte(f,18)<1 || readByte(f,18)>15 || readByte(f,18)==EFI_FV_FILETYPE_FIRMWARE_VOLUME_IMAGE)
         return "Unsupported file type.";
-    if (byte(f,23) != (polarity ? 0xF8 : 0x07)) return "Only DATA_VALID files with canonical state are editable.";
+    if (readByte(f,23) != (polarity ? 0xF8 : 0x07)) return "Only DATA_VALID files with canonical state are editable.";
     const unsigned alignment = 1U << ffsAlignmentTable[(attr & FFS_ATTRIB_DATA_ALIGNMENT)>>3];
     if ((relative+24) % alignment) return "Invalid FFS data alignment.";
     QByteArray h = f.left(24); h[17]=0; h[23]=0;
     if (sum8(h)) return "Invalid FFS header checksum.";
     if (attr & FFS_ATTRIB_CHECKSUM) {
-        if ((sum8(f.mid(24)) + byte(f,17)) % 256) return "Invalid FFS data checksum.";
-    } else if (byte(f,17) != FFS_FIXED_CHECKSUM2) return "Invalid FFS fixed checksum.";
+        if ((sum8(f.mid(24)) + readByte(f,17)) % 256) return "Invalid FFS data checksum.";
+    } else if (readByte(f,17) != FFS_FIXED_CHECKSUM2) return "Invalid FFS fixed checksum.";
     return QString();
 }
 }
@@ -105,7 +105,7 @@ QString FixedLayout::eligibility(const QByteArray& image, const TreeModel& m,
     if (m.compressed(volume) || m.marking(volume) || !supportedTree(m,file))
         return "Protected, compressed, GUID-defined, nested or unsupported file contents are read-only.";
     const QByteArray v = m.full(volume);
-    if (v.size()<72 || dword(v,40)!=EFI_FV_SIGNATURE || byte(v,55)!=2 || byte(v,54)!=0)
+    if (v.size()<72 || dword(v,40)!=EFI_FV_SIGNATURE || readByte(v,55)!=2 || readByte(v,54)!=0)
         return "Only revision-2 standard volumes are supported.";
     if (v.mid(16,16)!=EFI_FIRMWARE_FILE_SYSTEM2_GUID && v.mid(16,16)!=EFI_FIRMWARE_FILE_SYSTEM3_GUID)
         return "Nonstandard or authenticated volume filesystem is unsupported.";
@@ -156,7 +156,7 @@ bool FixedLayout::replace(const QByteArray& image, quint32 offset, const QByteAr
         error=fileCheck(fresh,(dword(v,44)&EFI_FVB2_ERASE_POLARITY)!=0,original.base(file)-original.base(file.parent()));
         if(!error.isEmpty()) return false;
     }
-    fresh[17]=(byte(fresh,19)&FFS_ATTRIB_CHECKSUM) ? char(-sum8(fresh.mid(24))) : char(FFS_FIXED_CHECKSUM2);
+    fresh[17]=(readByte(fresh,19)&FFS_ATTRIB_CHECKSUM) ? char(-sum8(fresh.mid(24))) : char(FFS_FIXED_CHECKSUM2);
     QByteArray h=fresh.left(24); h[16]=0; h[17]=0; h[23]=0;
     fresh[16]=char(-sum8(h));
     QByteArray candidate=image; candidate.replace(int(offset),old.size(),fresh);
