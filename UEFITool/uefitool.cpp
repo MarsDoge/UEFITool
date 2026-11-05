@@ -14,6 +14,8 @@
 #include "../version.h"
 #include "uefitool.h"
 #include "ui_uefitool.h"
+#include "../common/fixedlayout.h"
+#include <QCloseEvent>
 
 #include "../common/zlib/zlib.h"
 #include "../common/digest/sha1.h"
@@ -51,6 +53,8 @@ markingEnabled(true)
 
     // Create UI
     ui->setupUi(this);
+    ui->statusBar->addPermanentWidget(new QLabel(tr("EXPERIMENTAL: same-size physical FFS edits only; no bootability guarantee"), this));
+    ui->actionSaveImageFile->setText(tr("Save edited image as…"));
     setStyle(new DockProxyStyle(style()));
     setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
     ui->hexViewWidgetContents->layout()->addWidget(&selectedHexView);
@@ -167,6 +171,11 @@ UEFITool::~UEFITool()
 
 void UEFITool::init()
 {
+    workingImage.clear();
+    dirty = false;
+    ui->actionSaveImageFile->setEnabled(false);
+    ui->actionReplace->setEnabled(false);
+    ui->actionReplaceBody->setEnabled(false);
     // Clear components
     ui->parserMessagesListWidget->clear();
     ui->finderMessagesListWidget->clear();
@@ -339,6 +348,8 @@ void UEFITool::populateUi(const QModelIndex &current)
 {
     // Check sanity
     if (!current.isValid()) {
+        ui->actionReplace->setEnabled(false);
+        ui->actionReplaceBody->setEnabled(false);
         return;
     }
     
@@ -448,8 +459,11 @@ void UEFITool::populateUi(const QModelIndex &current)
     //    (type == Types::Section && (subtype == EFI_SECTION_COMPRESSION || subtype == EFI_SECTION_GUID_DEFINED || subtype == EFI_SECTION_DISPOSABLE)));
     //ui->actionInsertBefore->setEnabled(type == Types::File || type == Types::Section);
     //ui->actionInsertAfter->setEnabled(type == Types::File || type == Types::Section);
-    //ui->actionReplace->setEnabled((type == Types::Region && subtype != Subtypes::DescriptorRegion) || type == Types::Volume || type == Types::File || type == Types::Section);
-    //ui->actionReplaceBody->setEnabled(type == Types::Volume || type == Types::File || type == Types::Section);
+    const QString editReason = FixedLayout::eligibility(workingImage, *model, *ffsParser, current);
+    ui->actionReplace->setEnabled(editReason.isEmpty());
+    ui->actionReplaceBody->setEnabled(editReason.isEmpty());
+    ui->actionReplace->setToolTip(editReason);
+    ui->actionReplaceBody->setToolTip(editReason);
     
     ui->menuMessageActions->setEnabled(false);
 }
@@ -709,7 +723,59 @@ void UEFITool::replaceBody()
 
 void UEFITool::replace(const UINT8 mode)
 {
-    U_UNUSED_PARAMETER(mode);
+    const QModelIndex selected = ui->structureTreeView->currentIndex();
+    QString error = FixedLayout::eligibility(workingImage, *model, *ffsParser, selected);
+    if (!error.isEmpty()) {
+        QMessageBox::warning(this, tr("Replacement unavailable"), error); return;
+    }
+    const quint32 offset = model->base(selected);
+    const QString path = QFileDialog::getOpenFileName(this, tr("Experimental same-size replacement"), currentDir,
+        mode == REPLACE_MODE_BODY ? tr("FFS body (*.fbd *.bin);;All files (*)") : tr("FFS file (*.ffs *.bin);;All files (*)"));
+    if (path.isEmpty()) return;
+    QFile input(path);
+    if (!input.open(QIODevice::ReadOnly)) { QMessageBox::warning(this, tr("Replacement failed"), input.errorString()); return; }
+    const QByteArray data = input.readAll();
+    if (input.error()!=QFile::NoError) { QMessageBox::warning(this, tr("Replacement failed"), input.errorString()); return; }
+    if (QMessageBox::warning(this, tr("Experimental firmware editing"),
+        tr("Only fixed-size FFS replacement is supported. Unknown signatures and platform dependencies cannot be validated. "
+           "A successful parse does not prove the image will boot. Keep a recovery copy. Apply replacement?"),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)!=QMessageBox::Yes) return;
+    if (!replaceFileAt(offset, data, mode == REPLACE_MODE_BODY, error))
+        QMessageBox::warning(this, tr("Replacement rejected"), error);
+}
+
+bool UEFITool::replaceFileAt(quint32 offset, const QByteArray& data, bool bodyOnly, QString& error)
+{
+    QByteArray candidate;
+    if (!FixedLayout::replace(workingImage, offset, data, bodyOnly, candidate, error)) return false;
+    if (candidate == workingImage) return true;
+    workingImage = candidate;
+    dirty = true;
+    refreshEditedImage(offset);
+    return true;
+}
+
+void UEFITool::refreshEditedImage(quint32 selectedOffset)
+{
+    const QByteArray bytes = workingImage;
+    const bool wasDirty = dirty;
+    init();
+    workingImage = bytes;
+    dirty = wasDirty;
+    ffsParser->parse(workingImage); // already transactionally validated by FixedLayout
+    delete ffsFinder; ffsFinder = new FfsFinder(model);
+    delete ffsOps; ffsOps = new FfsOperations(model);
+    delete ffsReport; ffsReport = new FfsReport(model);
+    showParserMessages(); showFitTable(); showSecurityInfo();
+    enableDock(ui->structureTreeDock, true);
+    ui->actionSearch->setEnabled(true);
+    ui->actionGoToBase->setEnabled(true);
+    ui->actionGoToAddress->setEnabled(ffsParser->getAddressDiff() <= 0xFFFFFFFFUL);
+    ui->actionSaveImageFile->setEnabled(dirty);
+    setWindowTitle(tr("UEFITool %1 - %2 [EXPERIMENTAL]%3").arg(version).arg(QFileInfo(currentPath).fileName()).arg(dirty ? " *" : ""));
+    const QModelIndex selected = model->findByBase(selectedOffset);
+    ui->structureTreeView->setCurrentIndex(selected);
+    ui->structureTreeView->scrollTo(selected);
 }
 
 void UEFITool::extractAsIs()
@@ -836,12 +902,43 @@ void UEFITool::aboutQt()
 
 void UEFITool::exit()
 {
-    QCoreApplication::exit(0);
+    close();
 }
 
 void UEFITool::saveImageFile()
 {
-    
+    if (!dirty) return;
+    const QString path = QFileDialog::getSaveFileName(this, tr("Save experimental image as a NEW file"),
+        currentPath + ".edited.bin", tr("Firmware image (*.bin *.fd *.rom);;All files (*)"));
+    if (path.isEmpty()) return;
+    QString error;
+    if (!saveEditedImage(path, error)) QMessageBox::warning(this, tr("Save As failed"), error);
+}
+
+bool UEFITool::saveEditedImage(const QString& path, QString& error)
+{
+    if (workingImage.isEmpty()) { error = tr("No image loaded."); return false; }
+    if (!FixedLayout::saveAs(currentPath, path, workingImage, error)) return false;
+    dirty = false;
+    ui->actionSaveImageFile->setEnabled(false);
+    setWindowTitle(tr("UEFITool %1 - %2 [EXPERIMENTAL; saved copy]").arg(version).arg(QFileInfo(currentPath).fileName()));
+    ui->statusBar->showMessage(tr("Verified saved copy: %1").arg(path));
+    return true;
+}
+
+bool UEFITool::confirmDiscard()
+{
+    if (!dirty) return true;
+    const auto choice = QMessageBox::warning(this, tr("Unsaved experimental edits"),
+        tr("Save your edited image to a new file before continuing?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (choice == QMessageBox::Save) { saveImageFile(); return !dirty; }
+    return choice == QMessageBox::Discard;
+}
+
+void UEFITool::closeEvent(QCloseEvent* event)
+{
+    if (confirmDiscard()) event->accept(); else event->ignore();
 }
 
 void UEFITool::onDockStateChange(const bool topLevel)
@@ -1011,6 +1108,7 @@ void UEFITool::openImageFile(QString path)
 {
     if (path.trimmed().isEmpty())
         return;
+    if (!confirmDiscard()) return;
     
     QFileInfo fileInfo = QFileInfo(path);
     
@@ -1035,6 +1133,7 @@ void UEFITool::openImageFile(QString path)
     
     // Parse the image
     USTATUS result = ffsParser->parse(buffer);
+    workingImage = buffer;
     showParserMessages();
     if (result) {
         QMessageBox::critical(this, tr("Image parsing failed"), errorCodeToUString(result), QMessageBox::Ok);

@@ -71,6 +71,10 @@ public:
     void setProgramPath(QString path) { currentProgramPath = path; }
 
     void readSettings();
+    // Shared GUI/test entry points; same transactional policy as the menu actions.
+    bool replaceFileAt(quint32 offset, const QByteArray& data, bool bodyOnly, QString& error);
+    bool saveEditedImage(const QString& path, QString& error);
+    bool hasUnsavedChanges() const { return dirty; }
     
 private slots:
     void init();
@@ -168,6 +172,11 @@ private slots:
 #endif
     
 private:
+    QByteArray workingImage;
+    bool dirty = false;
+    bool confirmDiscard();
+    void closeEvent(QCloseEvent* event) override;
+    void refreshEditedImage(quint32 selectedOffset);
     Ui::UEFITool* ui;
     TreeModel* model;
     FfsParser* ffsParser;

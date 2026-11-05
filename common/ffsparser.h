@@ -114,6 +114,9 @@ public:
     // Obtain parsed FIT table
     std::vector<std::pair<std::vector<UString>, UModelIndex> > getFitTable() const;
 
+    // Editor policy: fail closed even if a recognized range could not be resolved.
+    bool hasProtectedRanges() const { return !protectedRanges.empty(); }
+
     // Obtain Security Info
     UString getSecurityInfo() const;
 

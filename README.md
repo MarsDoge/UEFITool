@@ -1,5 +1,7 @@
 # UEFITool
 
+> **Experimental fork:** this branch adds limited, same-size FFS replacement and Save As to NE. It does not implement general FV reconstruction or larger-file replacement. See [Experimental editing](EXPERIMENTAL_EDITING.md) for supported inputs, build/test instructions and limitations. The upstream introduction below is retained for context.
+
 UEFITool is a viewer and editor of firmware images conforming to UEFI Platform Interface (PI) Specifications.
 
 ![UEFITool icon](https://raw.githubusercontent.com/LongSoft/UEFITool/new_engine/UEFITool/icons/uefitool_64x64.png "UEFITool icon")  
