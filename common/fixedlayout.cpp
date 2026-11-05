@@ -10,6 +10,9 @@
 #include <cerrno>
 #include <cstring>
 #elif defined(Q_OS_WIN)
+// basetypes.h defines VOID, but winnt.h uses it to guard CHAR/SHORT/LONG
+// typedefs as well. Let the SDK supply that block (and redefine VOID).
+#undef VOID
 #include <qt_windows.h>
 #endif
 
