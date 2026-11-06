@@ -43,6 +43,7 @@ SET(PROJECT_SOURCES
  ../common/meparser.cpp
  ../common/ffsops.cpp
  ../common/fixedlayout.cpp
+ ../common/recursivereplace.cpp
  ../common/types.cpp
  ../common/descriptor.cpp
  ../common/ffs.cpp
@@ -187,4 +188,10 @@ IF(UEFITOOL_EDIT_TESTS)
  SET_TESTS_PROPERTIES(fixedlayout PROPERTIES TIMEOUT 30)
  ADD_EXECUTABLE(uefi_fixed_edit ../tests/fixedlayout_cli.cpp)
  TARGET_LINK_LIBRARIES(uefi_fixed_edit PRIVATE UEFIToolEditing)
+ ADD_EXECUTABLE(recursive_tests ../tests/recursive_tests.cpp)
+ TARGET_LINK_LIBRARIES(recursive_tests PRIVATE UEFIToolEditing)
+ ADD_TEST(NAME recursive COMMAND recursive_tests)
+ SET_TESTS_PROPERTIES(recursive PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+ ADD_EXECUTABLE(uefi_recursive_edit ../tests/recursive_cli.cpp)
+ TARGET_LINK_LIBRARIES(uefi_recursive_edit PRIVATE UEFIToolEditing)
 ENDIF()

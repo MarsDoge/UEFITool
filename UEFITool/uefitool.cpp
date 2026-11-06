@@ -15,6 +15,7 @@
 #include "uefitool.h"
 #include "ui_uefitool.h"
 #include "../common/fixedlayout.h"
+#include "../common/recursivereplace.h"
 #include <QCloseEvent>
 
 #include "../common/zlib/zlib.h"
@@ -53,7 +54,7 @@ markingEnabled(true)
 
     // Create UI
     ui->setupUi(this);
-    ui->statusBar->addPermanentWidget(new QLabel(tr("EXPERIMENTAL: same-size physical FFS edits only; no bootability guarantee"), this));
+    ui->statusBar->addPermanentWidget(new QLabel(tr("EXPERIMENTAL: recursive FFS/section Replace; no bootability guarantee"), this));
     ui->actionSaveImageFile->setText(tr("Save edited image as…"));
     setStyle(new DockProxyStyle(style()));
     setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
@@ -459,11 +460,13 @@ void UEFITool::populateUi(const QModelIndex &current)
     //    (type == Types::Section && (subtype == EFI_SECTION_COMPRESSION || subtype == EFI_SECTION_GUID_DEFINED || subtype == EFI_SECTION_DISPOSABLE)));
     //ui->actionInsertBefore->setEnabled(type == Types::File || type == Types::Section);
     //ui->actionInsertAfter->setEnabled(type == Types::File || type == Types::Section);
-    const QString editReason = FixedLayout::eligibility(workingImage, *model, *ffsParser, current);
+    const QString editReason = RecursiveReplace::eligibility(workingImage, *model, current);
     ui->actionReplace->setEnabled(editReason.isEmpty());
     ui->actionReplaceBody->setEnabled(editReason.isEmpty());
     ui->actionReplace->setToolTip(editReason);
     ui->actionReplaceBody->setToolTip(editReason);
+    if (type == Types::File || type == Types::Section)
+        ui->statusBar->showMessage(editReason.isEmpty() ? tr("Replace available: recursive rebuild; structural validation only") : tr("Replace unavailable: %1").arg(editReason));
     
     ui->menuMessageActions->setEnabled(false);
 }
@@ -724,30 +727,44 @@ void UEFITool::replaceBody()
 void UEFITool::replace(const UINT8 mode)
 {
     const QModelIndex selected = ui->structureTreeView->currentIndex();
-    QString error = FixedLayout::eligibility(workingImage, *model, *ffsParser, selected);
+    QString error = RecursiveReplace::eligibility(workingImage, *model, selected);
     if (!error.isEmpty()) {
         QMessageBox::warning(this, tr("Replacement unavailable"), error); return;
     }
-    const quint32 offset = model->base(selected);
-    const QString path = QFileDialog::getOpenFileName(this, tr("Experimental same-size replacement"), currentDir,
-        mode == REPLACE_MODE_BODY ? tr("FFS body (*.fbd *.bin);;All files (*)") : tr("FFS file (*.ffs *.bin);;All files (*)"));
+    const auto target = RecursiveReplace::path(selected);
+    const QString path = QFileDialog::getOpenFileName(this, tr("Replace %1 — recursive rebuild").arg(model->type(selected)==Types::File ? tr("FFS file") : tr("section")), currentDir,
+        mode == REPLACE_MODE_BODY ? tr("Body (decoded for compressed sections) (*.fbd *.sbd *.bin);;All files (*)") : tr("FFS file or section (*.ffs *.sct *.bin);;All files (*)"));
     if (path.isEmpty()) return;
     QFile input(path);
     if (!input.open(QIODevice::ReadOnly)) { QMessageBox::warning(this, tr("Replacement failed"), input.errorString()); return; }
     const QByteArray data = input.readAll();
     if (input.error()!=QFile::NoError) { QMessageBox::warning(this, tr("Replacement failed"), input.errorString()); return; }
     if (QMessageBox::warning(this, tr("Experimental firmware editing"),
-        tr("Only fixed-size FFS replacement is supported. Unknown signatures and platform dependencies cannot be validated. "
-           "A successful parse does not prove the image will boot. Keep a recovery copy. Apply replacement?"),
+        tr("Changed containers will be rebuilt and supported compressed ancestors recompressed. Volume capacity and unsupported relocation constraints are checked.\n"
+           "Replace body on a compressed section expects decoded data (use Extract uncompressed), as in the old engine.\n\n") +
+        RecursiveReplace::warnings(*ffsParser).join("\n") + tr("\n\nKeep a recovery copy. Apply replacement?"),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)!=QMessageBox::Yes) return;
-    if (!replaceFileAt(offset, data, mode == REPLACE_MODE_BODY, error))
-        QMessageBox::warning(this, tr("Replacement rejected"), error);
+    QByteArray candidate;
+    RecursiveReplace::Path resultPath;
+    if (!RecursiveReplace::replace(workingImage, target, data, mode == REPLACE_MODE_BODY, candidate, error, &resultPath)) {
+        QMessageBox::warning(this, tr("Replacement rejected"), error); return;
+    }
+    if (candidate == workingImage) return;
+    workingImage = candidate; dirty = true;
+    refreshEditedImage(0);
+    const auto replacementIndex = RecursiveReplace::index(*model, resultPath);
+    ui->structureTreeView->setCurrentIndex(replacementIndex);
+    ui->structureTreeView->scrollTo(replacementIndex);
 }
 
 bool UEFITool::replaceFileAt(quint32 offset, const QByteArray& data, bool bodyOnly, QString& error)
 {
     QByteArray candidate;
-    if (!FixedLayout::replace(workingImage, offset, data, bodyOnly, candidate, error)) return false;
+    const auto selected = model->findByBase(offset);
+    if (!selected.isValid() || model->type(selected)!=Types::File || model->compressed(selected)) {
+        error = tr("A physical FFS offset is required here; select nested nodes in the tree for recursive replacement."); return false;
+    }
+    if (!RecursiveReplace::replace(workingImage, RecursiveReplace::path(selected), data, bodyOnly, candidate, error)) return false;
     if (candidate == workingImage) return true;
     workingImage = candidate;
     dirty = true;
@@ -762,7 +779,7 @@ void UEFITool::refreshEditedImage(quint32 selectedOffset)
     init();
     workingImage = bytes;
     dirty = wasDirty;
-    ffsParser->parse(workingImage); // already transactionally validated by FixedLayout
+    ffsParser->parse(workingImage); // already transactionally validated by RecursiveReplace
     delete ffsFinder; ffsFinder = new FfsFinder(model);
     delete ffsOps; ffsOps = new FfsOperations(model);
     delete ffsReport; ffsReport = new FfsReport(model);

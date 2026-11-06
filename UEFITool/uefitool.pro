@@ -6,6 +6,8 @@ TEMPLATE = app
 CONFIG += c++11
 HEADERS += ../common/fixedlayout.h
 SOURCES += ../common/fixedlayout.cpp
+HEADERS += ../common/recursivereplace.h
+SOURCES += ../common/recursivereplace.cpp
 
 DEFINES += "U_ENABLE_FIT_PARSING_SUPPORT"
 DEFINES += "U_ENABLE_NVRAM_PARSING_SUPPORT"
